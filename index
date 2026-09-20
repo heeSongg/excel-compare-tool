@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>本地Excel数据对比工具</title>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        * {box-sizing: border-box;margin:0;padding:0;font-family:system-ui}
+        body{padding:24px;max-width:1200px;margin:0 auto;background:#f5f7fa}
+        .card{background:#fff;padding:20px;border-radius:10px;margin-bottom:16px;box-shadow:0 1px 4px #00000015}
+        .upload-area{display:flex;gap:16px;flex-wrap:wrap}
+        .upload-box{flex:1;min-width:280px;border:2px dashed #b8c2cc;padding:30px;text-align:center;border-radius:8px;cursor:pointer}
+        .upload-box.active{border-color:#2563eb;background:#eff6ff}
+        select,button{padding:8px 12px;font-size:14px;border-radius:6px;border:1px solid #ccc;margin:4px}
+        button{background:#2563eb;color:white;border:none;cursor:pointer}
+        button:disabled{background:#94a3b8;cursor:not-allowed}
+        #result{margin-top:16px;max-height:450px;overflow:auto}
+        table{width:100%;border-collapse:collapse;font-size:13px}
+        th,td{border:1px solid #ddd;padding:8px;text-align:left}
+        th{background:#f1f5f9}
+        .diff-row{background:#fff3cd}
+        .onlyA{background:#dbeafe}
+        .onlyB{background:#e0f2e9}
+    </style>
+</head>
+<body>
+    <h2>Excel本地数据对比工具（纯静态，数据不上传服务器）</h2>
+    <div class="card">
+        <div class="upload-area">
+            <div class="upload-box" id="boxA">
+                <h4>文件A</h4>
+                <p>点击或拖拽上传Excel</p>
+                <input type="file" id="fileA" accept=".xlsx,.xls" style="display:none">
+                <div id="nameA">未选择文件</div>
+            </div>
+            <div class="upload-box" id="boxB">
+                <h4>文件B</h4>
+                <p>点击或拖拽上传Excel</p>
+                <input type="file" id="fileB" accept=".xlsx,.xls" style="display:none">
+                <div id="nameB">未选择文件</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div>
+            <label>选择比对关键字段：</label>
+            <select id="keySelect">
+                <option value="">请先上传文件</option>
+            </select>
+            <button id="runBtn" disabled>开始对比</button>
+            <button id="exportBtn" disabled>导出差异结果</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div id="result"></div>
+    </div>
+
+<script>
+const fileAInput = document.getElementById('fileA');
+const fileBInput = document.getElementById('fileB');
+const boxA = document.getElementById('boxA');
+const boxB = document.getElementById('boxB');
+const nameA = document.getElementById('nameA');
+const nameB = document.getElementById('nameB');
+const keySelect = document.getElementById('keySelect');
+const runBtn = document.getElementById('runBtn');
+const exportBtn = document.getElementById('exportBtn');
+const resultDiv = document.getElementById('result');
+
+let dataA = null, dataB = null;
+let headers = [];
+let diffResult = [];
+
+// 绑定点击上传
+boxA.onclick = ()=>fileAInput.click();
+boxB.onclick = ()=>fileBInput.click();
+
+// 拖拽
+setupDrag(boxA, fileAInput);
+setupDrag(boxB, fileBInput);
+
+function setupDrag(box, input){
+    box.ondragover = e=>{e.preventDefault();box.classList.add('active')};
+    box.ondragleave = ()=>box.classList.remove('active');
+    box.ondrop = e=>{
+        e.preventDefault();
+        box.classList.remove('active');
+        input.files = e.dataTransfer.files;
+        input.dispatchEvent(new Event('change'));
+    }
+}
+
+fileAInput.onchange = async e=>{
+    const f = e.target.files[0];
+    if(!f) return;
+    nameA.innerText = f.name;
+    dataA = await readExcel(f);
+    checkReady();
+}
+fileBInput.onchange = async e=>{
+    const f = e.target.files[0];
+    if(!f) return;
+    nameB.innerText = f.name;
+    dataB = await readExcel(f);
+    checkReady();
+}
+
+//读取Excel
+async function readExcel(file){
+    return new Promise(resolve=>{
+        const reader = new FileReader();
+        reader.onload = e=>{
+            const wb = XLSX.read(e.target.result,{type:'binary'});
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const json = XLSX.utils.sheet_to_json(sheet);
+            resolve(json);
+        }
+        reader.readAsBinaryString(file);
+    })
+}
+
+function checkReady(){
+    if(dataA && dataB){
+        const h = Object.keys(dataA[0]||{});
+        headers = h;
+        keySelect.innerHTML = '';
+        h.forEach(k=>{
+            const opt = document.createElement('option');
+            opt.value = k;
+            opt.innerText = k;
+            keySelect.appendChild(opt);
+        })
+        runBtn.disabled = false;
+    }
+}
+
+runBtn.onclick = ()=>{
+    const key = keySelect.value;
+    if(!key) return alert('请选择关键字段');
+    diffResult = compare(dataA,dataB,key);
+    renderTable(diffResult);
+    exportBtn.disabled = false;
+}
+
+//核心对比逻辑
+function compare(aList,bList,keyField){
+    const mapB = new Map();
+    bList.forEach(item=>{
+        const k = String(item[keyField]);
+        mapB.set(k,item);
+    })
+    const res = [];
+    //遍历A
+    aList.forEach(itemA=>{
+        const k = String(itemA[keyField]);
+        if(!mapB.has(k)){
+            res.push({_type:"仅A存在",...itemA})
+        }else{
+            const itemB = mapB.get(k);
+            let isDiff = false;
+            headers.forEach(h=>{
+                if(String(itemA[h])!==String(itemB[h])) isDiff=true;
+            })
+            if(isDiff){
+                res.push({_type:"两边都有但不一致",...itemA})
+            }
+            mapB.delete(k);
+        }
+    })
+    //剩下在B中没匹配上的
+    mapB.forEach(itemB=>{
+        res.push({_type:"仅B存在",...itemB})
+    })
+    return res;
+}
+
+function renderTable(list){
+    if(!list.length){
+        resultDiv.innerHTML = "<p>未发现差异数据</p>";
+        return;
+    }
+    let html = `<table><thead><tr><th>差异类型</th>`;
+    headers.forEach(h=>html+=`<th>${h}</th>`);
+    html+=`</tr></thead><tbody>`;
+    list.forEach(row=>{
+        let cls = '';
+        if(row._type==="仅A存在") cls="onlyA";
+        else if(row._type==="仅B存在") cls="onlyB";
+        else cls="diff-row";
+        html += `<tr class="${cls}"><td>${row._type}</td>`;
+        headers.forEach(h=>html+=`<td>${row[h]??''}</td>`);
+        html += `</tr>`;
+    })
+    html+=`</tbody></table>`;
+    resultDiv.innerHTML = html;
+}
+
+exportBtn.onclick = ()=>{
+    if(!diffResult.length) return;
+    const ws = XLSX.utils.json_to_sheet(diffResult);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"差异结果");
+    XLSX.writeFile(wb,"数据对比结果.xlsx");
+}
+</script>
+</body>
+</html>
